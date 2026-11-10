@@ -1,0 +1,120 @@
+-- ============================================================
+-- CHARACTER TAB
+-- ============================================================
+local charGroup = ch.Character:AddLeftGroupbox('Custom Animations')
+
+-- Custom animation (Tornado)
+local function _anim2track(asset_id)
+    local objs = game:GetObjects(asset_id)
+    for i = 1, #objs do
+        if objs[i]:IsA("Animation") then return objs[i].AnimationId end
+    end
+    return asset_id
+end
+
+local _customAnimId = "92281817840531"
+local _customAnimSpeed = 99999
+if not _customAnimId:find("rbxassetid://") then
+    _customAnimId = "rbxassetid://" .. _customAnimId
+end
+pcall(function()
+    local converted = _anim2track(_customAnimId)
+    if converted then _customAnimId = converted end
+end)
+
+local _customAnimation = Instance.new("Animation")
+_customAnimation.AnimationId = _customAnimId
+
+local _currentTrack = nil
+local _customAnimConn = nil
+
+local function _playCustomAnim(character)
+    if not Options.CustomAnimEnabled or not Options.CustomAnimEnabled.Value then return end
+    local Hum = character and character:FindFirstChildWhichIsA("Humanoid")
+    if not Hum then return end
+
+    if _currentTrack then
+        pcall(function() _currentTrack:Stop() end)
+        _currentTrack = nil
+    end
+
+    local success, anim = pcall(function() return Hum:LoadAnimation(_customAnimation) end)
+    if success and anim then
+        _currentTrack = anim
+        pcall(function() anim.Priority = Enum.AnimationPriority.Action4 end)
+        pcall(function() anim:Play() end)
+        pcall(function() anim:AdjustSpeed(_customAnimSpeed) end)
+        anim.Stopped:Connect(function()
+            if Options.CustomAnimEnabled and Options.CustomAnimEnabled.Value then
+                task.defer(function() pcall(_playCustomAnim, character) end)
+            end
+        end)
+    end
+end
+
+local function _startCustomAnim()
+    if _customAnimConn then return end
+    _customAnimConn = LP.CharacterAdded:Connect(function(character)
+        character:WaitForChild("Humanoid")
+        task.delay(0.5, function() pcall(_playCustomAnim, character) end)
+    end)
+    if LP.Character then pcall(_playCustomAnim, LP.Character) end
+end
+
+local function _stopCustomAnim()
+    if _customAnimConn then pcall(function() _customAnimConn:Disconnect() end); _customAnimConn = nil end
+    if _currentTrack then
+        pcall(function() _currentTrack:Stop() end)
+        _currentTrack = nil
+    end
+end
+
+charGroup:AddToggle('CustomAnimEnabled', {
+    Text = 'Custom Animations', Default = false,
+    Callback = wrapToggleCB(function(Value)
+        if Value then _startCustomAnim() else _stopCustomAnim() end
+    end),
+}):AddKeyPicker('CustomAnimKey', { Default = 'None', SyncToggleState = true, Mode = 'Toggle', Text = 'Custom Animations', NoUI = false })
+
+_registerKeybind("Character", "Custom Animations", "CustomAnimEnabled")
+
+
+-- ============================================================
+-- CHARACTER TAB — Third Person
+-- ============================================================
+local thirdPersonGroup = ch.Character:AddRightGroupbox('Third Person')
+local _thirdPersonOn = false
+
+thirdPersonGroup:AddToggle('ThirdPersonEnabled', {
+    Text = 'Enabled', Default = false,
+    Callback = wrapToggleCB(function(v)
+        _thirdPersonOn = v == true
+        if _CameraCtrl and _CameraCtrl.SetThirdPersonOverride then
+            pcall(function() _CameraCtrl:SetThirdPersonOverride(v) end)
+        end
+    end),
+})
+
+_registerKeybind("Character", "Third Person", "ThirdPersonEnabled")
+
+-- Heartbeat to ensure camera stays in third person if forced
+if not _G._thirdPersonHB then
+    _G._thirdPersonHB = true
+    RunService.Heartbeat:Connect(function()
+        if _thirdPersonOn and _CameraCtrl and _CameraCtrl.CameraState then
+            pcall(function()
+                if _CameraCtrl.CameraState:GetPublicState() ~= _CameraCtrl.CameraState.States.ThirdPerson then
+                    _CameraCtrl.CameraState:TogglePOV()
+                end
+            end)
+        end
+    end)
+end
+
+-- Cleanup hook for unload
+if not _G._charUnloadHooked then
+    _G._charUnloadHooked = true
+    bc:OnUnload(function()
+        pcall(_stopCustomAnim)
+    end)
+end

@@ -1,0 +1,257 @@
+-- ===== ANTI-CHEAT BYPASS =====
+
+local _stbl
+_stbl = hookfunction(getrenv().setmetatable, newcclosure(function(tbl, mt)
+    if mt and typeof(mt) == "table" and rawget(mt, "__mode") == "kv" then
+        local tr = debug.traceback()
+        if tr:find("MiscellaneousController") then
+            return _stbl({1,2,3}, {})
+        end
+    end
+    return _stbl(tbl, mt)
+end))
+
+coroutine.wrap(function()
+    pcall(function()
+        local function disableScripts(obj)
+            pcall(function()
+                if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                    local success, name = pcall(function() return obj.Name:lower() end)
+                    if not success or not name then return end
+                    local keywords = {"anticheat","ac","detection","ban","kick","security","moderation","anti","cheat","exploit","inject","protect"}
+                    for i = 1, #keywords do
+                        if name:find(keywords[i]) then
+                            pcall(function() obj.Disabled = true end)
+                            break
+                        end
+                    end
+                end
+            end)
+        end
+        
+        pcall(function()
+            local descendants = game:GetDescendants()
+            for i = 1, #descendants do disableScripts(descendants[i]) end
+        end)
+        pcall(function() game.DescendantAdded:Connect(disableScripts) end)
+    end)
+    
+    pcall(function()
+        local network = game:GetService("NetworkClient")
+        if not network then return end
+        network.ChildAdded:Connect(function(child)
+            pcall(function()
+                local success, name = pcall(function() return child.Name:lower() end)
+                if success and name then
+                    if name:find("anticheat") or name:find("detection") or name:find("anti") or name:find("cheat") then
+                        pcall(function() child:Destroy() end)
+                    end
+                end
+            end)
+        end)
+    end)
+end)()
+
+pcall(function()
+    local fakeEvent = Instance.new("RemoteEvent")
+    fakeEvent.Name = "ClientAlert"
+    fakeEvent.Parent = game.Players.LocalPlayer
+end)
+
+pcall(function()
+    local replicatedFirst = game:GetService("ReplicatedFirst")
+    local targetScript = replicatedFirst:WaitForChild("LocalScript3", 10)
+    local gc = getgc(false)
+    
+    for i = 1, #gc do
+        local func = gc[i]
+        if type(func) ~= "function" then continue end
+        
+        local success, env = pcall(getfenv, func)
+        if not success or type(env) ~= "table" then continue end
+        
+        local success2, scriptObj = pcall(function() return rawget(env, "script") end)
+        if not success2 or not scriptObj or typeof(scriptObj) ~= "Instance" then continue end
+        
+        if scriptObj == targetScript then
+            local success3, constants = pcall(debug.getconstants, func)
+            if not success3 or type(constants) ~= "table" then continue end
+            
+            for j = 1, #constants do
+                local const = constants[j]
+                if type(const) == "string" and (const:find("TakeTheL") or const:find("ban") or const:find("kick") or const:find("detect")) then
+                    pcall(function() hookfunction(func, function() end) end)
+                    break
+                end
+            end
+        end
+    end
+end)
+
+
+print("🛡️ Anti-Cheat Bypass: ACTIVE")
+
+
+
+
+
+-- SilentAim.lua | Luau | Roblox (executor) | silent aim centered on screen
+-- FOV circle is measured from SCREEN CENTER, not the mouse.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local Mouse = LocalPlayer:GetMouse()
+
+-- ============ CONFIG ============
+local CONFIG = {
+    enabled       = true,
+    fov_radius    = 150,          -- pixels from screen center
+    hit_part      = "Head",       -- "Head" | "HumanoidRootPart"
+    team_check    = true,
+    wall_check    = false,        -- true = only visible enemies
+    toggle_key    = Enum.KeyCode.Q,
+    show_fov      = true,
+}
+-- =================================
+
+local target = nil
+
+-- FOV circle (locked to screen center)
+local fovCircle = Drawing.new("Circle")
+fovCircle.Thickness = 1.5
+fovCircle.NumSides = 64
+fovCircle.Radius = CONFIG.fov_radius
+fovCircle.Color = Color3.fromRGB(255, 60, 60)
+fovCircle.Transparency = 0.6
+fovCircle.Filled = false
+fovCircle.Visible = CONFIG.show_fov
+
+-- ============ HELPERS ============
+
+local function is_alive(plr)
+    local char = plr.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    return hum and hum.Health > 0
+end
+
+local function get_part(plr)
+    local char = plr.Character
+    if not char then return nil end
+    return char:FindFirstChild(CONFIG.hit_part)
+        or char:FindFirstChild("Head")
+        or char:FindFirstChild("HumanoidRootPart")
+end
+
+local function is_visible(plr)
+    if not CONFIG.wall_check then return true end
+    local char = plr.Character
+    local localChar = LocalPlayer.Character
+    if not char or not localChar then return false end
+    local part = get_part(plr)
+    if not part then return false end
+    local parts = Camera:GetPartsObscuringTarget({part.Position}, {localChar, char})
+    return #parts == 0
+end
+
+local function screen_center()
+    local vp = Camera.ViewportSize
+    return Vector2.new(vp.X / 2, vp.Y / 2)
+end
+
+-- find closest player to SCREEN CENTER inside FOV
+local function find_target()
+    local best, bestDist = nil, math.huge
+    local center = screen_center()
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        if CONFIG.team_check and LocalPlayer.Team and plr.Team == LocalPlayer.Team then continue end
+        if not is_alive(plr) then continue end
+        if not is_visible(plr) then continue end
+
+        local part = get_part(plr)
+        if not part then continue end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+        if not onScreen then continue end
+
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+        if dist <= CONFIG.fov_radius and dist < bestDist then
+            best, bestDist = plr, dist
+        end
+    end
+
+    return best
+end
+
+-- ============ HOOK ============
+local mt = getrawmetatable(game)
+local oldIndex = mt.__index
+setreadonly(mt, false)
+
+mt.__index = newcclosure(function(self, key)
+    if CONFIG.enabled and not checkcaller() and self == Mouse then
+        if (key == "Hit" or key == "Target") and target then
+            local part = get_part(target)
+            if part then
+                if key == "Hit" then
+                    return CFrame.new(part.Position)
+                else
+                    return part
+                end
+            end
+        end
+    end
+    return oldIndex(self, key)
+end)
+
+setreadonly(mt, true)
+
+-- ============ LOOP ============
+
+RunService.RenderStepped:Connect(function()
+    -- FOV circle stays on screen center
+    fovCircle.Position = screen_center()
+    fovCircle.Radius = CONFIG.fov_radius
+    fovCircle.Visible = CONFIG.show_fov and CONFIG.enabled
+
+    if not CONFIG.enabled then
+        target = nil
+        return
+    end
+
+    if target and (not target.Parent or not is_alive(target)) then
+        target = nil
+    end
+
+    if not target then
+        target = find_target()
+    else
+        -- drop if out of FOV relative to center
+        local part = get_part(target)
+        if part then
+            local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+            if not onScreen then
+                target = nil
+            else
+                local dist = (Vector2.new(screenPos.X, screenPos.Y) - screen_center()).Magnitude
+                if dist > CONFIG.fov_radius then
+                    target = nil
+                end
+            end
+        end
+    end
+end)
+
+-- ============ TOGGLE ============
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == CONFIG.toggle_key then
+        CONFIG.enabled = not CONFIG.enabled
+        if not CONFIG.enabled then target = nil end
+    end
+end)

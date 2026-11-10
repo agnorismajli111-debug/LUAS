@@ -1,0 +1,343 @@
+-- ============================================================
+-- NOTIFICATION GROUPBOX — Hit Notifier
+-- ============================================================
+
+local NotificationGroup = Tabs.Combat:AddLeftGroupbox("Notification")
+
+local _hitNotifyState = getgenv().__XilosHitNotifierState or {
+    Hooked = false,
+    Enabled = false,
+    OriginalDamageNumberEffect = nil,
+    WrappedDamageNumberEffect = nil,
+    LastNotifyKey = nil,
+    LastNotifyTime = 0,
+    NotifyQueue = {},
+    Version = 1,
+}
+getgenv().__XilosHitNotifierState = _hitNotifyState
+
+local _hitNotifyFormat = getgenv().__XilosHitNotifyFormat or "Hit {NAME} for {DMG} in the {PART}"
+local _hitNotifyDuration = 2
+
+-- Get character from any instance by walking up the tree
+local function _hitGetCharacterFromInstance(inst)
+    local current = inst
+    while current and current ~= workspace do
+        if current:IsA("Model") then
+            local hum = current:FindFirstChildOfClass("Humanoid")
+                or current:FindFirstChild("EnemyHumanoid")
+            if hum or players:GetPlayerFromCharacter(current) then
+                return current
+            end
+        end
+        current = current.Parent
+    end
+    return nil
+end
+
+-- Friendly name for a part
+local function _hitGetPartName(inst)
+    if not inst then return "Unknown" end
+    local name = inst.Name
+    if name == "HitboxHead" or name == "HitboxHeadSmall" or name == "Head" then
+        return "Head"
+    end
+    if name == "HitboxBody" or name == "HitboxBodySmall" then
+        return "Body"
+    end
+    return name
+end
+
+local function _hitSafeTableGet(tab, key)
+    if typeof(tab) ~= "table" then return nil end
+    local ok, v = pcall(rawget, tab, key)
+    if ok then return v end
+    return nil
+end
+
+local function _hitFindInTableValues(tab, callback)
+    local found
+    pcall(function()
+        for _, value in pairs(tab) do
+            found = callback(value)
+            if found ~= nil then return end
+        end
+    end)
+    return found
+end
+
+-- Recursively search an Instance/table for a hit part
+local function _hitFindInstance(value, depth)
+    if depth > 5 then return nil end
+    if typeof(value) == "Instance" then
+        return _hitGetCharacterFromInstance(value) and value or nil
+    end
+    if typeof(value) ~= "table" then return nil end
+
+    local direct = _hitSafeTableGet(value, utf8.char(2))
+        or _hitSafeTableGet(value, utf8.char(1))
+        or _hitSafeTableGet(value, "HitPart")
+        or _hitSafeTableGet(value, "Hitbox")
+        or _hitSafeTableGet(value, "Instance")
+        or _hitSafeTableGet(value, "Part")
+        or _hitSafeTableGet(value, "Target")
+        or _hitSafeTableGet(value, "TargetPart")
+        or _hitSafeTableGet(value, "Humanoid")
+    if typeof(direct) == "Instance" and _hitGetCharacterFromInstance(direct) then
+        return direct
+    end
+
+    return _hitFindInTableValues(value, function(child)
+        local found = _hitFindInstance(child, depth + 1)
+        if found then return found end
+    end)
+end
+
+-- Extract damage number from a data table
+local function _hitGetDamageValue(data, depth)
+    if type(data) == "number" and data > 0 and data <= 1000 then
+        return data
+    end
+    if depth > 6 or typeof(data) ~= "table" then return nil end
+
+    local direct = _hitSafeTableGet(data, utf8.char(0))
+        or _hitSafeTableGet(data, "Damage")
+        or _hitSafeTableGet(data, "damage")
+        or _hitSafeTableGet(data, "Amount")
+        or _hitSafeTableGet(data, "amount")
+        or _hitSafeTableGet(data, "DamageAmount")
+        or _hitSafeTableGet(data, "damageAmount")
+        or _hitSafeTableGet(data, "HealthRemoved")
+        or _hitSafeTableGet(data, "healthRemoved")
+
+    if type(direct) == "number" and direct > 0 then
+        return direct
+    end
+
+    local nested = _hitFindInTableValues(data, function(child)
+        if typeof(child) == "table" then
+            local found = _hitGetDamageValue(child, depth + 1)
+            if found then return found end
+        end
+    end)
+    if nested then return nested end
+
+    return _hitFindInTableValues(data, function(child)
+        if type(child) == "number" and child > 0 and child <= 500 then
+            return child
+        end
+    end)
+end
+
+local function _hitGetNotifyDuration()
+    return math.clamp(tonumber(_hitNotifyDuration) or 2, 0.5, 10)
+end
+
+-- Get the currently equipped weapon's display name
+local function _hitGetWeaponName()
+    local ok, name = pcall(function()
+        if fighterCtrl then
+            local fighter = fighterCtrl.LocalFighter or fighterCtrl:GetFighter(lplr)
+            local item = fighter and fighter.EquippedItem
+            if not item then return "Unknown" end
+            if type(item.Get) == "function" then
+                return item:Get("Name") or item:Get("ItemName") or item:Get("WeaponName")
+            end
+            return item.Name or (item.Info and item.Info.Name)
+        end
+        return "Unknown"
+    end)
+    return ok and tostring(name or "Unknown") or "Unknown"
+end
+
+-- Fill in the format template
+local function _hitBuildMessage(playerName, damage, part)
+    local format = tostring(_hitNotifyFormat or "")
+    if format == "" then
+        format = "Hit {NAME} for {DMG} in the {PART}"
+    end
+    local weapon = _hitGetWeaponName()
+    return format
+        :gsub("{NAME}", playerName)
+        :gsub("{DMG}", damage)
+        :gsub("{PART}", part)
+        :gsub("{WEAPON}", weapon)
+        :gsub("{player}", playerName)
+        :gsub("{damage}", damage)
+        :gsub("{part}", part)
+        :gsub("{weapon}", weapon)
+end
+
+-- Queue + flush loop (so rapid hits don't spam Library:Notify)
+local _hitNotifyQueue = _hitNotifyState.NotifyQueue
+
+local function _hitFlush(text, duration)
+    if Library and type(Library.Notify) == "function" then
+        local ok = pcall(function() Library:Notify(text, duration) end)
+        if ok then return end
+    end
+    if mainapi and type(mainapi.SafeNotify) == "function" then
+        pcall(function()
+            mainapi:SafeNotify({ Text = text, Duration = duration })
+        end)
+    end
+end
+
+task.spawn(function()
+    while true do
+        local item = table.remove(_hitNotifyQueue, 1)
+        if item then
+            _hitFlush(item.Text, item.Duration)
+            task.wait(0.02)
+        else
+            task.wait(0.25)
+        end
+    end
+end)
+
+local function _hitSend(text, duration)
+    table.insert(_hitNotifyQueue, { Text = text, Duration = duration })
+end
+
+-- Walk a value to find (part, character) for the target
+local function _hitFindDamageTarget(value, depth)
+    if depth > 6 then return nil end
+    if typeof(value) == "Instance" then
+        local character = _hitGetCharacterFromInstance(value)
+        if character and character ~= lplr.Character then
+            return value, character
+        end
+        return nil
+    end
+    if typeof(value) ~= "table" then return nil end
+
+    local found = _hitFindInTableValues(value, function(child)
+        local part, character = _hitFindDamageTarget(child, depth + 1)
+        if part then return { part, character } end
+    end)
+    if found then return found[1], found[2] end
+    return nil
+end
+
+-- Core notify function — reads damage/hit info out of the args
+local function _hitNotifyDamageIndicator(...)
+    local args = table.pack(...)
+    local damage, hitPart, character
+
+    for index = 2, args.n do
+        local value = args[index]
+        damage = damage or _hitGetDamageValue(value, 0)
+        if not hitPart then
+            hitPart, character = _hitFindDamageTarget(value, 0)
+        end
+    end
+
+    if not damage or not hitPart or not character then return end
+    local player = players:GetPlayerFromCharacter(character)
+    if player == lplr then return end
+
+    local playerName = player and player.Name or character.Name
+    local part = _hitGetPartName(hitPart)
+    local damageText = damage % 1 == 0 and tostring(damage) or string.format("%.1f", damage)
+    local text = _hitBuildMessage(playerName, damageText, part)
+    local key = playerName .. "|" .. part .. "|" .. tostring(damage)
+    local now = tick()
+
+    if _hitNotifyState.LastNotifyKey == key
+        and now - (_hitNotifyState.LastNotifyTime or 0) < 0.08 then
+        return
+    end
+
+    _hitNotifyState.LastNotifyKey = key
+    _hitNotifyState.LastNotifyTime = now
+    _hitSend(text, _hitGetNotifyDuration())
+end
+
+-- Hook _DamageNumberEffect on the fighter class
+local function _hitInstallHooks()
+    local ok, err = pcall(function()
+        local fighter = fighterCtrl and (fighterCtrl.LocalFighter or fighterCtrl:GetFighter(lplr))
+        local fighterClass = fighter and getmetatable(fighter)
+        fighterClass = fighterClass and fighterClass.__index
+        if type(fighterClass) ~= "table" or type(fighterClass._DamageNumberEffect) ~= "function" then
+            error("_DamageNumberEffect unavailable")
+        end
+
+        if _hitNotifyState.WrappedDamageNumberEffect
+            and fighterClass._DamageNumberEffect == _hitNotifyState.WrappedDamageNumberEffect then
+            _hitNotifyState.Hooked = true
+            return
+        end
+
+        _hitNotifyState.OriginalDamageNumberEffect = fighterClass._DamageNumberEffect
+        _hitNotifyState.WrappedDamageNumberEffect = function(...)
+            if _hitNotifyState.Enabled then
+                pcall(_hitNotifyDamageIndicator, ...)
+            end
+            local result = table.pack(_hitNotifyState.OriginalDamageNumberEffect(...))
+            return unpack(result, 1, result.n)
+        end
+
+        fighterClass._DamageNumberEffect = _hitNotifyState.WrappedDamageNumberEffect
+    end)
+
+    if not ok then
+        warn("[Hit Notifier] Hook failed:", err)
+        return false
+    end
+    _hitNotifyState.Hooked = true
+    return true
+end
+
+local function _hitUninstallHooks()
+    _hitNotifyState.Enabled = false
+    pcall(function()
+        local fighter = fighterCtrl and (fighterCtrl.LocalFighter or fighterCtrl:GetFighter(lplr))
+        local fighterClass = fighter and getmetatable(fighter)
+        fighterClass = fighterClass and fighterClass.__index
+        if fighterClass
+            and fighterClass._DamageNumberEffect == _hitNotifyState.WrappedDamageNumberEffect
+            and _hitNotifyState.OriginalDamageNumberEffect then
+            fighterClass._DamageNumberEffect = _hitNotifyState.OriginalDamageNumberEffect
+        end
+    end)
+    _hitNotifyState.Hooked = false
+end
+
+-- UI: toggle + format input
+NotificationGroup:AddToggle("HitNotifierEnabled", {
+    Text = "Hit Notifier",
+    Tooltip = "Notifies you when you hit an enemy (name, damage, weapon, part)",
+    Default = false,
+    Callback = function(Value)
+        _hitNotifyState.Enabled = Value == true
+        if Value then
+            _hitInstallHooks()
+        else
+            _hitUninstallHooks()
+        end
+    end
+}):AddKeyPicker("HitNotifierKeybind", {
+    Default = "None",
+    SyncToggleState = true,
+    Mode = "Toggle",
+    Text = "Hit Notifier",
+    NoUI = false,
+})
+
+NotificationGroup:AddInput("HitNotifyFormatInput", {
+    Default = "Hit {NAME} for {DMG} in the {PART}",
+    Text = "message format",
+    Placeholder = "{NAME} took {DMG} from {WEAPON} in the {PART}",
+    Numeric = false,
+    Finished = true,
+    Callback = function(Value)
+        if tostring(Value or "") ~= "" then
+            _hitNotifyFormat = Value
+            getgenv().__XilosHitNotifyFormat = Value
+        else
+            _hitNotifyFormat = "Hit {NAME} for {DMG} in the {PART}"
+            getgenv().__XilosHitNotifyFormat = _hitNotifyFormat
+        end
+    end
+})

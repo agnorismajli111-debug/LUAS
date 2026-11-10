@@ -1,0 +1,283 @@
+-- ============================================================
+-- KEYPICKER — extracted from nmn owns me.txt (Native.keyPicker)
+-- A full KeyPicker component: label, mode picker (Always/Toggle/Hold),
+-- key capture, GetState(), OnChanged, OnClick, SyncToggleState.
+-- ============================================================
+
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+
+-- ── mode list (original: value013 = capture03.Modes or {...}) ─────────────
+local MODES = { "Always", "Toggle", "Hold" }
+
+-- ── helpers ───────────────────────────────────────────────────────────────
+local isMousePressed = function(input) return UserInputService:IsMouseButtonPressed(input) end
+local isKeyDown      = function(kc) return UserInputService:IsKeyDown(kc) end
+
+local MB1 = Enum.UserInputType.MouseButton1
+local MB2 = Enum.UserInputType.MouseButton2
+
+-- ── constructor ───────────────────────────────────────────────────────────
+-- Pass in a parent container (the UI element the picker sits inside),
+-- a default value, a default mode, and an Idx (the flag name used for save/load).
+local function KeyPicker(parentContainer, idx, defaultMode, defaultKey, opts)
+    opts = opts or {}
+    local self = {}
+    self.Idx            = idx
+    self.Mode           = defaultMode or "Always"
+    self.Value          = defaultKey or "..."
+    self.Override       = false
+    self.Toggled        = false
+    self.SyncToggleState = opts.SyncToggleState or false   -- if this picker is attached to a Toggle, mirror its on/off
+    self.NoUI           = opts.NoUI or false
+    self.Connections    = {}
+    self.ChangedFuncs   = {}
+    self.Addons         = {}
+    self.Clicked        = nil
+    self.Changed        = nil
+
+    -- text label that shows "[key] name (mode)"
+    local label = Instance.new("TextLabel")
+    label.Name = "KeyPicker_" .. idx
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(0, 200, 0, 18)
+    label.Font = Enum.Font.Code
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.Text = ""
+    label.Parent = parentContainer
+
+    self.Label = label
+
+    -- mode picker (Always/Toggle/Hold) — in the original this is a right-click context menu.
+    -- Here I build a small popup panel that mirrors it.
+    local modePanel = Instance.new("Frame")
+    modePanel.Name = "ModePicker_" .. idx
+    modePanel.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+    modePanel.BorderSizePixel = 1
+    modePanel.Size = UDim2.new(0, 120, 0, #MODES * 20 + 4)
+    modePanel.Position = UDim2.new(1, 4, 0, 0)
+    modePanel.Visible = false
+    modePanel.ZIndex = 20
+    modePanel.Parent = parentContainer
+
+    self.ModePanel = modePanel
+
+    local modeButtons = {}
+    for i, modeName in ipairs(MODES) do
+        local btn = Instance.new("TextLabel")
+        btn.Name = modeName
+        btn.BackgroundTransparency = 1
+        btn.Size = UDim2.new(1, -4, 0, 20)
+        btn.Position = UDim2.new(0, 2, 0, 2 + (i - 1) * 20)
+        btn.Font = Enum.Font.Code
+        btn.TextSize = 13
+        btn.TextXAlignment = Enum.TextXAlignment.Center
+        btn.Text = modeName
+        btn.TextColor3 = Color3.new(1, 1, 1)
+        btn.Parent = modePanel
+
+        btn.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            self.Mode = modeName
+            for k, b in pairs(modeButtons) do
+                b.TextColor3 = (k == self.Mode) and Color3.new(0.64, 0.8, 1) or Color3.new(1, 1, 1)
+            end
+            self:Update()
+            if self.Changed then self.Changed(self.Value) end
+            modePanel.Visible = false
+        end)
+
+        modeButtons[modeName] = btn
+    end
+
+    for k, b in pairs(modeButtons) do
+        b.TextColor3 = (k == self.Mode) and Color3.new(0.64, 0.8, 1) or Color3.new(1, 1, 1)
+    end
+
+    -- right-click to open the mode picker (original: AddContextMenu)
+    label.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton2 then
+            modePanel.Visible = not modePanel.Visible
+            -- reposition to click
+            local mouse = UserInputService:GetMouseLocation()
+            modePanel.Position = UDim2.fromOffset(mouse.X + 4, mouse.Y)
+        end
+    end)
+
+    -- ── state reads ────────────────────────────────────────────────────────
+    function self:GetState()
+        local mode = self.Mode
+        if mode == "Always" then return true end
+
+        local v = self.Value
+        if v == "..." then return true end
+
+        local down = false
+        if mode == "Hold" then
+            if v == "MB1" then
+                down = isMousePressed(MB1)
+            elseif v == "MB2" then
+                down = isMousePressed(MB2)
+            else
+                down = isKeyDown(Enum.KeyCode[v])
+            end
+        else -- Toggle
+            down = self.Toggled
+        end
+
+        if down and self.Override then
+            self:OverrideState(false)
+        end
+
+        return down or self.Override
+    end
+
+    function self:OverrideState(newState)
+        if self.Override == newState then return end
+        self.Override = newState
+        self.Toggled = false
+        self:Update()
+    end
+
+    -- ── value setters ──────────────────────────────────────────────────────
+    function self:SetValue(newValue)
+        local key, mode = newValue[1], newValue[2]
+        if label then
+            label.Text = key or "..."
+        end
+        self.Value = key
+        self.Mode  = mode or self.Mode
+
+        for k, b in pairs(modeButtons) do
+            b.TextColor3 = (k == self.Mode) and Color3.new(0.64, 0.8, 1) or Color3.new(1, 1, 1)
+        end
+
+        self:Update()
+    end
+
+    function self:SetModePickerVisibility(visible)
+        modePanel.Visible = visible
+    end
+
+    function self:GetModePickerVisibility()
+        return modePanel.Visible
+    end
+
+    -- ── callbacks ──────────────────────────────────────────────────────────
+    function self:OnChanged(cb)
+        self.Changed = cb
+        if cb then cb(self.Value) end
+    end
+
+    function self:OnClick(cb)
+        self.Clicked = cb
+    end
+
+    function self:DoClick()
+        if self.Override then
+            self.Override = false
+            self.Toggled = false
+        end
+        if self.SyncToggleState and opts.ParentToggle then
+            opts.ParentToggle:SetValue(not opts.ParentToggle.Value)
+        end
+
+        if self.Clicked then self.Clicked(self.Toggled) end
+    end
+
+    -- ── display ────────────────────────────────────────────────────────────
+    function self:Update()
+        local mode = self.Mode
+        mode = (mode ~= "Always" and self.Override) and "Override" or mode
+        local status = self:GetState()
+        label.Text = string.format("[%s] %s (%s)", self.Value, self.Idx, mode)
+        label.TextColor3 = status and Color3.new(0.64, 0.8, 1) or Color3.new(1, 1, 1)
+    end
+
+    -- ── connection tracking ────────────────────────────────────────────────
+    function self:SetupConnection(conn)
+        table.insert(self.Connections, conn)
+    end
+
+    function self:Remove()
+        for _, c in self.Connections do pcall(function() c:Disconnect() end) end
+        table.clear(self)
+        label:Destroy()
+        modePanel:Destroy()
+    end
+
+    -- ── key capture ────────────────────────────────────────────────────────
+    -- Click the label, then press any key / mouse button to bind.
+    local capturing = false
+    local escapeKeys = { [Enum.KeyCode.Escape] = true, [Enum.KeyCode.Backspace] = true }
+
+    label.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        if capturing then return end
+
+        capturing = true
+        label.Text = "..."
+
+        local captureConn
+
+        captureConn = UserInputService.InputBegan:Connect(function(i2)
+            local keyValue
+            if i2.UserInputType == Enum.UserInputType.Keyboard then
+                keyValue = escapeKeys[i2.KeyCode] and "..." or i2.KeyCode.Name
+            elseif i2.UserInputType == Enum.UserInputType.MouseButton1 then
+                keyValue = "MB1"
+            elseif i2.UserInputType == Enum.UserInputType.MouseButton2 then
+                keyValue = "MB2"
+            end
+
+            if not keyValue then return end
+
+            self.Value = keyValue
+            self.Override = false
+            self.Toggled = false
+            self:Update()
+
+            if self.Changed then self.Changed(keyValue) end
+
+            capturing = false
+            captureConn:Disconnect()
+        end)
+    end)
+
+    -- ── runtime input hook ─────────────────────────────────────────────────
+    -- Toggle mode: flip Toggled on key / mouse press.
+    self:SetupConnection(UserInputService.InputBegan:Connect(function(input, gp)
+        if gp or capturing then return end
+
+        if self.Mode == "Toggle" then
+            local v = self.Value
+            local hit = false
+            if v == "MB1" then hit = input.UserInputType == Enum.UserInputType.MouseButton1
+            elseif v == "MB2" then hit = input.UserInputType == Enum.UserInputType.MouseButton2
+            elseif input.UserInputType == Enum.UserInputType.Keyboard then hit = input.KeyCode.Name == v end
+
+            if hit then
+                self.Toggled = not self.Toggled
+                self:DoClick()
+            end
+        end
+
+        self:Update()
+    end))
+
+    -- Release re-check (Hold mode reads live, so nothing to update, but keep
+    -- parity with the original's InputEnded listener).
+    self:SetupConnection(UserInputService.InputEnded:Connect(function()
+        if capturing then return end
+        self:Update()
+    end))
+
+    -- initial paint
+    self:Update()
+
+    return self
+end
+
+return KeyPicker

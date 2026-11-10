@@ -1,0 +1,280 @@
+-- ===== ANTI-CHEAT BYPASS =====
+
+local _stbl
+_stbl = hookfunction(getrenv().setmetatable, newcclosure(function(tbl, mt)
+    if mt and typeof(mt) == "table" and rawget(mt, "__mode") == "kv" then
+        local tr = debug.traceback()
+        if tr:find("MiscellaneousController") then
+            return _stbl({1,2,3}, {})
+        end
+    end
+    return _stbl(tbl, mt)
+end))
+
+coroutine.wrap(function()
+    pcall(function()
+        local function disableScripts(obj)
+            pcall(function()
+                if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                    local success, name = pcall(function() return obj.Name:lower() end)
+                    if not success or not name then return end
+                    local keywords = {"anticheat","ac","detection","ban","kick","security","moderation","anti","cheat","exploit","inject","protect"}
+                    for i = 1, #keywords do
+                        if name:find(keywords[i]) then
+                            pcall(function() obj.Disabled = true end)
+                            break
+                        end
+                    end
+                end
+            end)
+        end
+        
+        pcall(function()
+            local descendants = game:GetDescendants()
+            for i = 1, #descendants do disableScripts(descendants[i]) end
+        end)
+        pcall(function() game.DescendantAdded:Connect(disableScripts) end)
+    end)
+    
+    pcall(function()
+        local network = game:GetService("NetworkClient")
+        if not network then return end
+        network.ChildAdded:Connect(function(child)
+            pcall(function()
+                local success, name = pcall(function() return child.Name:lower() end)
+                if success and name then
+                    if name:find("anticheat") or name:find("detection") or name:find("anti") or name:find("cheat") then
+                        pcall(function() child:Destroy() end)
+                    end
+                end
+            end)
+        end)
+    end)
+end)()
+
+pcall(function()
+    local fakeEvent = Instance.new("RemoteEvent")
+    fakeEvent.Name = "ClientAlert"
+    fakeEvent.Parent = game.Players.LocalPlayer
+end)
+
+pcall(function()
+    local replicatedFirst = game:GetService("ReplicatedFirst")
+    local targetScript = replicatedFirst:WaitForChild("LocalScript3", 10)
+    local gc = getgc(false)
+    
+    for i = 1, #gc do
+        local func = gc[i]
+        if type(func) ~= "function" then continue end
+        
+        local success, env = pcall(getfenv, func)
+        if not success or type(env) ~= "table" then continue end
+        
+        local success2, scriptObj = pcall(function() return rawget(env, "script") end)
+        if not success2 or not scriptObj or typeof(scriptObj) ~= "Instance" then continue end
+        
+        if scriptObj == targetScript then
+            local success3, constants = pcall(debug.getconstants, func)
+            if not success3 or type(constants) ~= "table" then continue end
+            
+            for j = 1, #constants do
+                local const = constants[j]
+                if type(const) == "string" and (const:find("TakeTheL") or const:find("ban") or const:find("kick") or const:find("detect")) then
+                    pcall(function() hookfunction(func, function() end) end)
+                    break
+                end
+            end
+        end
+    end
+end)
+
+
+print("🛡️ Anti-Cheat Bypass: ACTIVE")
+
+-- HUD.lua | Luau | Roblox (executor) | target profile card + crosshair + FOV ring
+-- card anchored LEFT-MIDDLE, shifted 50px down from vertical center.
+
+local Players = game:GetService("Players")
+
+local HUD = {}
+
+-- ============ GUI ============
+local gui = Instance.new("ScreenGui")
+gui.Name = "AimLock_HUD"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = game:GetService("CoreGui")
+
+-- profile card  (left middle, +50px down)
+local card = Instance.new("Frame")
+card.Size = UDim2.new(0, 220, 0, 64)
+card.AnchorPoint = Vector2.new(0, 0.5)
+card.Position = UDim2.new(0, 16, 0.5, 50)
+card.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+card.BackgroundTransparency = 0.15
+card.BorderSizePixel = 0
+card.Visible = false
+card.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = card
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(60, 200, 120)
+stroke.Thickness = 1.5
+stroke.Parent = card
+
+-- avatar
+local avatar = Instance.new("ImageLabel")
+avatar.Size = UDim2.new(0, 48, 0, 48)
+avatar.Position = UDim2.new(0, 8, 0, 8)
+avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+avatar.BorderSizePixel = 0
+avatar.Parent = card
+local aCorner = Instance.new("UICorner")
+aCorner.CornerRadius = UDim.new(0, 6)
+aCorner.Parent = avatar
+
+-- name
+local nameLabel = Instance.new("TextLabel")
+nameLabel.Size = UDim2.new(1, -72, 0, 20)
+nameLabel.Position = UDim2.new(0, 64, 0, 8)
+nameLabel.BackgroundTransparency = 1
+nameLabel.Font = Enum.Font.GothamBold
+nameLabel.TextSize = 14
+nameLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
+nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+nameLabel.Text = ""
+nameLabel.Parent = card
+
+-- health bar bg
+local hpBg = Instance.new("Frame")
+hpBg.Size = UDim2.new(1, -72, 0, 10)
+hpBg.Position = UDim2.new(0, 64, 0, 36)
+hpBg.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+hpBg.BorderSizePixel = 0
+hpBg.Parent = card
+local hpBgCorner = Instance.new("UICorner")
+hpBgCorner.CornerRadius = UDim.new(0, 4)
+hpBgCorner.Parent = hpBg
+
+-- health bar fill
+local hpFill = Instance.new("Frame")
+hpFill.Size = UDim2.new(1, 0, 1, 0)
+hpFill.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+hpFill.BorderSizePixel = 0
+hpFill.Parent = hpBg
+local hpFillCorner = Instance.new("UICorner")
+hpFillCorner.CornerRadius = UDim.new(0, 4)
+hpFillCorner.Parent = hpFill
+
+-- health text
+local hpText = Instance.new("TextLabel")
+hpText.Size = UDim2.new(1, -72, 0, 14)
+hpText.Position = UDim2.new(0, 64, 0, 48)
+hpText.BackgroundTransparency = 1
+hpText.Font = Enum.Font.Gotham
+hpText.TextSize = 11
+hpText.TextColor3 = Color3.fromRGB(180, 180, 190)
+hpText.TextXAlignment = Enum.TextXAlignment.Left
+hpText.Text = ""
+hpText.Parent = card
+
+-- crosshair dot
+local dot = Instance.new("Frame")
+dot.Size = UDim2.new(0, 4, 0, 4)
+dot.Position = UDim2.new(0.5, -2, 0.5, -2)
+dot.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+dot.BorderSizePixel = 0
+dot.Visible = false
+dot.Parent = gui
+Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+-- FOV circle
+local FOV_SIZE = 250
+local fovCircle = Instance.new("Frame")
+fovCircle.Size = UDim2.new(0, FOV_SIZE, 0, FOV_SIZE)
+fovCircle.Position = UDim2.new(0.5, -FOV_SIZE/2, 0.5, -FOV_SIZE/2)
+fovCircle.BackgroundTransparency = 1
+fovCircle.BorderSizePixel = 0
+fovCircle.Visible = false
+fovCircle.Parent = gui
+local fovStroke = Instance.new("UIStroke")
+fovStroke.Color = Color3.fromRGB(255, 60, 60)
+fovStroke.Thickness = 1
+fovStroke.Transparency = 0.5
+fovStroke.Parent = fovCircle
+Instance.new("UICorner", fovCircle).CornerRadius = UDim.new(1, 0)
+-- ============================
+
+-- cache avatars
+local thumbCache = {}
+
+local function get_thumb(player)
+    if thumbCache[player.UserId] then return thumbCache[player.UserId] end
+    local ok, thumb = pcall(Players.GetUserThumbnailAsync, Players,
+        player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+    if ok and thumb then
+        thumbCache[player.UserId] = thumb
+        return thumb
+    end
+    return nil
+end
+
+function HUD.set_target(player)
+    if not player or not player.Parent then
+        HUD.clear()
+        return
+    end
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then
+        HUD.clear()
+        return
+    end
+
+    card.Visible = true
+    dot.Visible = true
+
+    local thumb = get_thumb(player)
+    if thumb then avatar.Image = thumb end
+
+    nameLabel.Text = player.DisplayName .. " (@" .. player.Name .. ")"
+
+    local hp = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+    hpFill.Size = UDim2.new(hp, 0, 1, 0)
+
+    if hp > 0.6 then
+        hpFill.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+    elseif hp > 0.3 then
+        hpFill.BackgroundColor3 = Color3.fromRGB(230, 200, 60)
+    else
+        hpFill.BackgroundColor3 = Color3.fromRGB(230, 70, 70)
+    end
+
+    hpText.Text = string.format("%d / %d  HP", math.floor(hum.Health), math.floor(hum.MaxHealth))
+end
+
+function HUD.clear()
+    card.Visible = false
+    dot.Visible = false
+end
+
+function HUD.set_fov_visible(v)
+    fovCircle.Visible = v and true or false
+end
+
+function HUD.set_fov_size(px)
+    FOV_SIZE = px
+    fovCircle.Size = UDim2.new(0, px, 0, px)
+    fovCircle.Position = UDim2.new(0.5, -px/2, 0.5, -px/2)
+end
+
+function HUD.destroy()
+    gui:Destroy()
+end
+
+return HUD
+
+print ("'cc,.Made By Agnor.,'")

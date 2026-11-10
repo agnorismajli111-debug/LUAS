@@ -1,0 +1,280 @@
+-- ============================================================
+-- ESP TAB
+-- ============================================================
+local espMain = ch.Esp:AddLeftGroupbox('ESP')
+local espSettings = ch.Esp:AddRightGroupbox('ESP Settings')
+
+local espState = {
+    enabled = false,
+    box = false,
+    health = false,
+    name = false,
+    weapon = false,
+    distance = false,
+    showTeam = false,
+    maxDistance = 1000,
+    textSize = 14,
+    conn = nil,
+    drawings = {}, -- stores drawing objects per player
+}
+
+-- Dynamic parts used to calculate the perfect bounding box
+local DYNAMIC_PARTS = {
+    'RightHand', 'LeftLowerArm', 'RightLowerArm', 'LeftUpperArm', 'RightUpperArm',
+    'LowerTorso', 'LeftLowerLeg', 'LeftUpperLeg', 'LeftFoot', 'RightFoot',
+    'RightLowerLeg', 'RightUpperLeg', 'UpperTorso', 'LeftHand', 'Head',
+}
+
+local function cleanPlayerDrawings(plr)
+    if espState.drawings[plr] then
+        for _, drawing in pairs(espState.drawings[plr]) do
+            pcall(function() drawing:Remove() end)
+        end
+        espState.drawings[plr] = nil
+    end
+end
+
+local function cleanAllDrawings()
+    for plr, _ in pairs(espState.drawings) do
+        cleanPlayerDrawings(plr)
+    end
+end
+
+local function createPlayerDrawings(plr)
+    local d = {}
+    
+    -- Box Outline
+    d.boxOutline = Drawing.new("Square")
+    d.boxOutline.Thickness = 1
+    d.boxOutline.Color = Color3.new(0, 0, 0)
+    d.boxOutline.Filled = false
+    d.boxOutline.Visible = false
+
+    -- Box Inner
+    d.box = Drawing.new("Square")
+    d.box.Thickness = 1
+    d.box.Color = Color3.new(1, 1, 1)
+    d.box.Filled = false
+    d.box.Visible = false
+
+    -- Health Bar
+    d.healthBg = Drawing.new("Square")
+    d.healthBg.Filled = true
+    d.healthBg.Color = Color3.new(0, 0, 0)
+    d.healthBg.Visible = false
+
+    d.healthBar = Drawing.new("Square")
+    d.healthBar.Filled = true
+    d.healthBar.Color = Color3.new(0, 1, 0)
+    d.healthBar.Visible = false
+
+    -- Text Elements
+    d.name = Drawing.new("Text")
+    d.name.Center = true
+    d.name.Outline = true
+    d.name.Size = 14
+    d.name.Color = Color3.new(1, 1, 1)
+    d.name.Visible = false
+
+    d.weapon = Drawing.new("Text")
+    d.weapon.Center = true
+    d.weapon.Outline = true
+    d.weapon.Size = 14
+    d.weapon.Color = Color3.new(1, 1, 1)
+    d.weapon.Visible = false
+
+    d.distance = Drawing.new("Text")
+    d.distance.Center = true
+    d.distance.Outline = true
+    d.distance.Size = 14
+    d.distance.Color = Color3.new(1, 1, 1)
+    d.distance.Visible = false
+
+    espState.drawings[plr] = d
+    return d
+end
+
+local function getDynamicBounds(root)
+    local cam = workspace.CurrentCamera
+    if not cam then return nil end
+    
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local any = false
+
+    for _, partName in ipairs(DYNAMIC_PARTS) do
+        local part = root.Parent:FindFirstChild(partName)
+        if part then
+            local sp, onScreen = cam:WorldToViewportPoint(part.Position)
+            if onScreen then
+                any = true
+                if sp.X < minX then minX = sp.X end
+                if sp.X > maxX then maxX = sp.X end
+                if sp.Y < minY then minY = sp.Y end
+                if sp.Y > maxY then maxY = sp.Y end
+            end
+        end
+    end
+
+    if not any then return nil end
+
+    local width = math.max(10, maxX - minX)
+    local height = math.max(10, maxY - minY)
+    local x = minX + (width / 2) - (width / 2)
+    local y = minY
+
+    return Vector2.new(width, height), Vector2.new(x, y)
+end
+
+local function espLoop()
+    if not espState.enabled then return end
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LP then continue end
+        
+        local char = plr.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        
+        if not char or not hum or not hrp or hum.Health <= 0 then
+            cleanPlayerDrawings(plr)
+            continue
+        end
+        
+        if not espState.showTeam and plr.Team and LP.Team and plr.Team == LP.Team then
+            cleanPlayerDrawings(plr)
+            continue
+        end
+
+        local dist = (cam.CFrame.Position - hrp.Position).Magnitude
+        if dist > espState.maxDistance then
+            cleanPlayerDrawings(plr)
+            continue
+        end
+
+        local d = espState.drawings[plr]
+        if not d then
+            d = createPlayerDrawings(plr)
+        end
+
+        local bounds, pos = getDynamicBounds(hrp)
+        
+        if not bounds then
+            d.boxOutline.Visible = false; d.box.Visible = false
+            d.healthBg.Visible = false; d.healthBar.Visible = false
+            d.name.Visible = false; d.weapon.Visible = false; d.distance.Visible = false
+            continue
+        end
+
+        local baseColor = Options.ESPColor.Value or Color3.new(1, 1, 1)
+
+        -- 1. Box
+        if espState.box then
+            d.box.Size = bounds
+            d.box.Position = pos
+            d.box.Color = baseColor
+            d.box.Visible = true
+            
+            d.boxOutline.Size = bounds + Vector2.new(2, 2)
+            d.boxOutline.Position = pos - Vector2.new(1, 1)
+            d.boxOutline.Visible = true
+        else
+            d.box.Visible = false
+            d.boxOutline.Visible = false
+        end
+
+        -- 2. Health Bar
+        if espState.health then
+            local hpPct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+            local hpHeight = bounds.Y * hpPct
+            
+            d.healthBg.Size = Vector2.new(3, bounds.Y)
+            d.healthBg.Position = Vector2.new(pos.X - 5, pos.Y)
+            d.healthBg.Visible = true
+            
+            d.healthBar.Size = Vector2.new(2, hpHeight)
+            d.healthBar.Position = Vector2.new(pos.X - 4, pos.Y + (bounds.Y - hpHeight))
+            d.healthBar.Color = Color3.fromRGB(255 * (1 - hpPct), 255 * hpPct, 0)
+            d.healthBar.Visible = true
+        else
+            d.healthBg.Visible = false
+            d.healthBar.Visible = false
+        end
+
+        -- 3. Name
+        if espState.name then
+            d.name.Text = plr.Name
+            d.name.Position = Vector2.new(pos.X + bounds.X / 2, pos.Y - 16)
+            d.name.Color = baseColor
+            d.name.Visible = true
+        else
+            d.name.Visible = false
+        end
+
+        -- 4. Weapon
+        if espState.weapon then
+            local tool = char:FindFirstChildOfClass("Tool")
+            d.weapon.Text = tool and tool.Name or "None"
+            d.weapon.Position = Vector2.new(pos.X + bounds.X / 2, pos.Y + bounds.Y + 2)
+            d.weapon.Color = baseColor
+            d.weapon.Visible = true
+        else
+            d.weapon.Visible = false
+        end
+
+        -- 5. Distance
+        if espState.distance then
+            d.distance.Text = "[" .. math.floor(dist) .. "m]"
+            d.distance.Position = Vector2.new(pos.X + bounds.X / 2, pos.Y + bounds.Y + 18)
+            d.distance.Color = baseColor
+            d.distance.Visible = true
+        else
+            d.distance.Visible = false
+        end
+    end
+end
+
+-- Toggle ESP Master
+espMain:AddToggle('ESPEnabled', {
+    Text = 'Enabled', Default = false,
+    Callback = wrapToggleCB(function(v)
+        espState.enabled = v
+        if v then
+            if not espState.conn then
+                espState.conn = RunService.RenderStepped:Connect(function()
+                    pcall(espLoop)
+                end)
+            end
+        else
+            if espState.conn then
+                espState.conn:Disconnect()
+                espState.conn = nil
+            end
+            cleanAllDrawings()
+        end
+    end),
+})
+
+-- Features
+espMain:AddToggle('ESPBox', { Text = 'Box', Default = false, Callback = wrapToggleCB(function(v) espState.box = v end) })
+espMain:AddToggle('ESPHealth', { Text = 'Health Bar', Default = false, Callback = wrapToggleCB(function(v) espState.health = v end) })
+espMain:AddToggle('ESPName', { Text = 'Name', Default = false, Callback = wrapToggleCB(function(v) espState.name = v end) })
+espMain:AddToggle('ESPWeapon', { Text = 'Weapon', Default = false, Callback = wrapToggleCB(function(v) espState.weapon = v end) })
+espMain:AddToggle('ESPDistance', { Text = 'Distance', Default = false, Callback = wrapToggleCB(function(v) espState.distance = v end) })
+
+-- Settings
+espSettings:AddToggle('ESPShowTeam', { Text = 'Show Team', Default = false, Callback = wrapToggleCB(function(v) espState.showTeam = v end) })
+espSettings:AddSlider('ESPMaxDistance', { Text = 'Max Distance', Default = 1000, Min = 100, Max = 5000, Rounding = 0, Suffix = ' studs', Callback = function(v) espState.maxDistance = v end })
+espSettings:AddLabel('ESP Color'):AddColorPicker('ESPColor', { Default = Color3.fromRGB(255, 255, 255), Callback = function() end })
+
+_registerKeybind("Esp", "ESP Enabled", "ESPEnabled")
+
+-- Cleanup hook
+if not _G._espUnloadHooked then
+    _G._espUnloadHooked = true
+    bc:OnUnload(function()
+        cleanAllDrawings()
+    end)
+end
